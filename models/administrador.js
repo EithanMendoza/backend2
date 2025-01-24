@@ -61,6 +61,19 @@ router.delete('/usuarios/:id', (req, res) => {
   });
 });
 
+// Endpoint GET para obtener los técnicos de servicio
+router.get('/tecnicos-servicio', (req, res) => {
+  const query = 'SELECT * FROM tecnicos_servicio';
+  db.query(query, (err, results) => {
+      if (err) {
+          console.error('Error al consultar la base de datos:', err);
+          res.status(500).json({ error: 'Error al consultar la base de datos' });
+          return;
+      }
+      res.status(200).json(results);
+  });
+});
+
 
 // Obtener todos los perfiles de técnicos con información de sesiones
 router.get('/tecnicos', (req, res) => {
