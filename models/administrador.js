@@ -122,28 +122,27 @@ router.get('/solicitudes', (req, res) => {
   const query = `
     SELECT 
       ss.id AS solicitud_id,
-      ss.nombre_servicio,
-      ss.marca_ac,
-      ss.tipo_ac,
-      ss.fecha,
-      ss.hora,
-      ss.direccion,
-      ss.estado,
       u.username AS usuario_nombre,
       t.nombre_usuario AS tecnico_nombre,
-      ts.nombre_servicio AS tipo_servicio
+      ss.num_paneles,
+      ss.acceso,
+      ss.acceso_razon,
+      ss.distancia_km,
+      ss.detalles,
+      ss.precio_estimado,
+      ss.estado,
+      ss.created_at,
+      ss.updated_at
     FROM 
       solicitudes_servicio ss
     LEFT JOIN 
       usuarios u ON ss.user_id = u.id
     LEFT JOIN 
       tecnicos_servicio t ON ss.tecnico_id = t.id
-    LEFT JOIN 
-      tipos_servicio ts ON ss.tipo_servicio_id = ts.id
     WHERE 
-      ss.estado IN ('pendiente', 'asignado')
+      ss.estado IN ('pendiente', 'asignada')
     ORDER BY 
-      ss.fecha ASC, ss.hora ASC
+      ss.created_at ASC
   `;
 
   db.query(query, (err, rows) => {
@@ -154,6 +153,7 @@ router.get('/solicitudes', (req, res) => {
     res.json(rows);
   });
 });
+
 
 // Eliminar una solicitud si está en estado "pendiente"
 router.delete('/solicitudes/:id', (req, res) => {
