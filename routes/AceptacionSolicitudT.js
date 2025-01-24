@@ -5,47 +5,10 @@ const db = require('../database'); // Conexión a la base de datos
 const verificarTecnico = require('../middleware/tecnicosmiddleware'); // Middleware de autenticaciónesion = require('../middleware/authMiddleware'); // Middleware de sesión
 
 // Endpoint para obtener solicitudes en estado pendiente (para técnicos)
-router.get('/solicitudes-pendientes', verificarTecnico, (req, res) => {
-  const query = `
-    SELECT 
-      s.id, 
-      s.user_id, 
-      s.tipo_servicio_id, 
-      s.nombre_servicio, 
-      s.marca_ac, 
-      s.tipo_ac, 
-      s.detalles, 
-      s.fecha, 
-      s.hora, 
-      s.direccion,
-      u.username AS nombre_usuario,
-      u.email AS correo_usuario
-    FROM 
-      solicitudes_servicio s
-    JOIN 
-      usuarios u ON s.user_id = u.id
-    WHERE 
-      s.estado = 'pendiente'
-  `;
-
-  db.query(query, (err, results) => {
-    if (err) {
-      console.error('Error al obtener las solicitudes pendientes:', err);
-      return res.status(500).json({ error: 'Error al obtener las solicitudes pendientes', detalle: err.message });
-    }
-
-    res.status(200).json(results);
-  });
-});
-
-
-
-// Endpoint para aceptar una solicitud
-router.put('/aceptar-solicitud/:solicitudId', verificarTecnico, (req, res) => {
-  const { solicitudId } = req.params;
+router.get('/solicitudes-disponibles', verificarTecnico, (req, res) => {
   const token = req.headers['authorization'];
 
-  // Obtener el tecnico_id desde el token de sesión
+  // Obtener técnico ID desde el token
   const queryTecnicoId = 'SELECT tecnico_id FROM sesiones_tecnico WHERE session_token = ? AND tiempo_cierre IS NULL';
   db.query(queryTecnicoId, [token], (err, result) => {
     if (err || result.length === 0) {
@@ -54,69 +17,105 @@ router.put('/aceptar-solicitud/:solicitudId', verificarTecnico, (req, res) => {
 
     const tecnicoId = result[0].tecnico_id;
 
-    // Verificar si el técnico tiene solicitudes en estado "asignado"
-    const queryVerificarSolicitudActiva = `
-      SELECT id FROM solicitudes_servicio 
-      WHERE tecnico_id = ? AND estado = 'asignado'
+    // Consultar solicitudes pendientes
+    const querySolicitudes = `
+      SELECT id, user_id, num_paneles, acceso, acceso_razon, distancia_km, precio_estimado, detalles 
+      FROM solicitudes_servicio 
+      WHERE estado = 'pendiente'
     `;
-    db.query(queryVerificarSolicitudActiva, [tecnicoId], (err, result) => {
+
+    db.query(querySolicitudes, (err, solicitudes) => {
       if (err) {
-        console.error('Error al verificar solicitudes activas:', err);
-        return res.status(500).json({ error: 'Error al verificar solicitudes activas' });
+        console.error('Error al obtener solicitudes disponibles:', err);
+        return res.status(500).json({ error: 'Error al obtener solicitudes disponibles.' });
       }
 
-      // Si el técnico ya tiene una solicitud activa en estado "asignado", no puede aceptar otra
-      if (result.length > 0) {
-        return res.status(400).json({ error: 'El técnico ya tiene una solicitud asignada en curso.' });
-      }
-
-      // Generar un código aleatorio de 6 dígitos solo para el usuario
-      const codigoInicial = crypto.randomBytes(3).toString('hex').toUpperCase();
-
-      // Cambiar el estado de la solicitud a "asignado", registrar el técnico y guardar el código inicial
-      const queryAceptarSolicitud = `
-        UPDATE solicitudes_servicio 
-        SET estado = 'asignado', tecnico_id = ?, codigo_inicial = ?
-        WHERE id = ? AND estado = 'pendiente'
-      `;
-
-      db.query(queryAceptarSolicitud, [tecnicoId, codigoInicial, solicitudId], (err, result) => {
-        if (err) {
-          console.error('Error al aceptar la solicitud:', err);
-          return res.status(500).json({ error: 'Error al aceptar la solicitud', detalle: err.message });
-        }
-
-        if (result.affectedRows === 0) {
-          return res.status(404).json({ error: 'Solicitud no encontrada o ya ha sido aceptada.' });
-        }
-
-        // Obtener el user_id de la solicitud aceptada para enviar la notificación
-        const queryUserId = 'SELECT user_id FROM solicitudes_servicio WHERE id = ?';
-        db.query(queryUserId, [solicitudId], (err, result) => {
-          if (err || result.length === 0) {
-            console.error('Error al obtener el usuario para la notificación:', err);
-            return res.status(500).json({ error: 'Error al obtener el usuario para la notificación', detalle: err.message });
-          }
-
-          const userId = result[0].user_id;
-          const mensaje = `Un técnico ha sido asignado a tu solicitud. Usa este código para iniciar el servicio: ${codigoInicial}`;
-
-          // Insertar la notificación en la tabla 'notificaciones'
-          const queryNotificacion = 'INSERT INTO notificaciones (user_id, mensaje) VALUES (?, ?)';
-          db.query(queryNotificacion, [userId, mensaje], (err) => {
-            if (err) {
-              console.error('Error al enviar la notificación:', err);
-              return res.status(500).json({ error: 'Error al enviar la notificación', detalle: err.message });
-            }
-
-            res.status(200).json({ mensaje: 'Solicitud aceptada. El usuario ha sido notificado.' });
-          });
-        });
-      });
+      res.status(200).json({ solicitudes });
     });
   });
 });
 
+// Endpoint para aceptar una solicitud
+router.post('/aceptar-solicitud/:id', verificarTecnico, (req, res) => {
+  const solicitudId = req.params.id;
+  const token = req.headers['authorization'];
+
+  // Obtener técnico ID desde el token
+  const queryTecnicoId = 'SELECT tecnico_id FROM sesiones_tecnico WHERE session_token = ? AND tiempo_cierre IS NULL';
+  db.query(queryTecnicoId, [token], (err, result) => {
+    if (err || result.length === 0) {
+      return res.status(401).json({ error: 'Sesión no válida o expirada.' });
+    }
+
+    const tecnicoId = result[0].tecnico_id;
+
+    // Verificar si la capacidad del técnico ya está inicializada
+    const queryCapacidad = `
+      SELECT capacidad_tecnico.max_servicios, 
+             COUNT(solicitudes_servicio.id) AS servicios_actuales 
+      FROM capacidad_tecnico 
+      LEFT JOIN solicitudes_servicio 
+      ON capacidad_tecnico.tecnico_id = solicitudes_servicio.tecnico_id 
+         AND solicitudes_servicio.estado = "asignada" 
+      WHERE capacidad_tecnico.tecnico_id = ?
+      GROUP BY capacidad_tecnico.max_servicios;
+    `;
+
+    db.query(queryCapacidad, [tecnicoId], (err, result) => {
+      if (err) {
+        console.error('Error al verificar la capacidad del técnico:', err);
+        return res.status(500).json({ error: 'Error al verificar la capacidad del técnico.' });
+      }
+
+      if (result.length === 0) {
+        // Inicializar capacidad con el primer servicio
+        const queryInsertarCapacidad = `
+          INSERT INTO capacidad_tecnico (tecnico_id, max_servicios) 
+          VALUES (?, 3)
+        `;
+        db.query(queryInsertarCapacidad, [tecnicoId], (err) => {
+          if (err) {
+            console.error('Error al inicializar la capacidad del técnico:', err);
+            return res.status(500).json({ error: 'Error al inicializar la capacidad del técnico.' });
+          }
+
+          // Continuar con el proceso tras inicializar capacidad
+          return asignarSolicitud(tecnicoId, solicitudId, res);
+        });
+        return;
+      }
+
+      const maxServicios = result[0].max_servicios;
+      const serviciosActuales = result[0].servicios_actuales;
+
+      if (serviciosActuales >= maxServicios) {
+        return res.status(400).json({ error: 'Has alcanzado el límite de servicios asignados.' });
+      }
+
+      // Continuar con la asignación
+      asignarSolicitud(tecnicoId, solicitudId, res);
+    });
+  });
+});
+
+// Función para asignar una solicitud
+function asignarSolicitud(tecnicoId, solicitudId, res) {
+  const queryActualizarSolicitud = `
+    UPDATE solicitudes_servicio 
+    SET tecnico_id = ?, estado = 'asignada' 
+    WHERE id = ? AND estado = 'pendiente'
+  `;
+  db.query(queryActualizarSolicitud, [tecnicoId, solicitudId], (err, result) => {
+    if (err || result.affectedRows === 0) {
+      console.error('Error al asignar la solicitud:', err);
+      return res.status(500).json({ error: 'No se pudo asignar la solicitud. Tal vez ya no está disponible.' });
+    }
+
+    res.status(200).json({
+      mensaje: 'Solicitud asignada correctamente.',
+    });
+  });
+}
 
 
 router.put('/cancelar-solicitud/:solicitudId', verificarTecnico, (req, res) => {
@@ -170,35 +169,40 @@ router.put('/cancelar-solicitud/:solicitudId', verificarTecnico, (req, res) => {
   });
 });
 
-// Endpoint para obtener las solicitudes aceptadas (en estado asignado)
-router.get('/solicitudes-aceptadas', verificarTecnico, (req, res) => {
-  const query = `
-    SELECT 
-      s.id, 
-      s.nombre_servicio, 
-      s.marca_ac, 
-      s.tipo_ac, 
-      s.detalles, 
-      s.fecha, 
-      s.hora, 
-      s.direccion,
-      s.estado,
-      s.tecnico_id
-    FROM 
-      solicitudes_servicio s
-    WHERE 
-      s.estado = 'asignado' AND s.tecnico_id = ?
+//Endpoint: Servicios Asignados al Técnico
+router.get('/mis-servicios', verificarTecnico, (req, res) => {
+  const token = req.headers['authorization'];
+
+  // Obtener el técnico ID desde el token de sesión
+  const queryTecnicoId = `
+    SELECT tecnico_id 
+    FROM sesiones_tecnico 
+    WHERE session_token = ? AND tiempo_cierre IS NULL
   `;
 
-  const tecnicoId = req.tecnico.id; // Obtener el ID del técnico desde la sesión
-  
-  db.query(query, [tecnicoId], (err, results) => {
-    if (err) {
-      console.error('Error al obtener las solicitudes aceptadas:', err);
-      return res.status(500).json({ error: 'Error al obtener las solicitudes aceptadas', detalle: err.message });
+  db.query(queryTecnicoId, [token], (err, result) => {
+    if (err || result.length === 0) {
+      console.error('Error al obtener técnico ID:', err);
+      return res.status(401).json({ error: 'Sesión no válida o expirada.' });
     }
 
-    res.status(200).json(results);
+    const tecnicoId = result[0].tecnico_id;
+
+    // Consultar servicios asignados al técnico
+    const queryServicios = `
+      SELECT id, user_id, num_paneles, acceso, acceso_razon, distancia_km, precio_estimado, detalles, estado 
+      FROM solicitudes_servicio 
+      WHERE tecnico_id = ? AND estado = 'asignada'
+    `;
+
+    db.query(queryServicios, [tecnicoId], (err, servicios) => {
+      if (err) {
+        console.error('Error al obtener servicios asignados:', err);
+        return res.status(500).json({ error: 'Error al obtener servicios asignados.' });
+      }
+
+      res.status(200).json({ servicios });
+    });
   });
 });
 

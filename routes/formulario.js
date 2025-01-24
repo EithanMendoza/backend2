@@ -6,12 +6,17 @@ const verificarPerfil = require('../middleware/perfilmiddleware'); // Middleware
 
 // Endpoint para crear una solicitud de servicio
 router.post('/crear-solicitud', verificarSesion, verificarPerfil, (req, res) => {
-  const { tipo_servicio_id, marca_ac, tipo_ac, detalles, fecha, hora, direccion } = req.body;
+  const { num_paneles, acceso, acceso_razon, distancia_km, detalles } = req.body;
   const token = req.headers['authorization']; // Obtener el token de sesión
 
   // Validar que todos los campos obligatorios están presentes
-  if (!tipo_servicio_id || !marca_ac || !tipo_ac || !fecha || !hora || !direccion) {
-    return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+  if (!num_paneles || !acceso || !distancia_km) {
+    return res.status(400).json({ error: 'Todos los campos obligatorios deben estar presentes.' });
+  }
+
+  // Validar el nivel de acceso
+  if (!['fácil', 'moderado', 'difícil'].includes(acceso)) {
+    return res.status(400).json({ error: 'El nivel de acceso debe ser fácil, moderado o difícil.' });
   }
 
   // Obtener el user_id desde el token de sesión
@@ -31,43 +36,62 @@ router.post('/crear-solicitud', verificarSesion, verificarPerfil, (req, res) => 
     db.query(queryVerificarSolicitudActiva, [userId], (err, result) => {
       if (err) {
         console.error('Error al verificar solicitudes activas:', err);
-        return res.status(500).json({ error: 'Error al verificar solicitudes activas' });
+        return res.status(500).json({ error: 'Error al verificar solicitudes activas.' });
       }
 
-      // Si el usuario ya tiene una solicitud pendiente, no puede crear otra
       if (result.length > 0) {
         return res.status(400).json({ error: 'Ya tienes una solicitud pendiente en curso.' });
       }
 
-      // Validar el tipo de servicio
-      const queryValidarServicio = 'SELECT nombre_servicio FROM tipos_servicio WHERE id = ?';
-      db.query(queryValidarServicio, [tipo_servicio_id], (err, result) => {
-        if (err || result.length === 0) {
-          return res.status(400).json({ error: 'Tipo de servicio no válido.' });
+      // Calcular el precio estimado
+      const calcularPrecioEstimado = (numPaneles, acceso, distanciaKm) => {
+        const costoBase = 500;
+        const costoPorPanel = 50;
+        const costoAcceso = { fácil: 0, moderado: 200, difícil: 400 };
+        const costoPorKm = 10;
+
+        return (
+          costoBase +
+          numPaneles * costoPorPanel +
+          costoAcceso[acceso] +
+          distanciaKm * costoPorKm
+        );
+      };
+
+      const precioEstimado = calcularPrecioEstimado(num_paneles, acceso, distancia_km);
+
+      // Insertar la solicitud en la base de datos
+      const queryInsertarSolicitud = `
+        INSERT INTO solicitudes_servicio 
+        (user_id, num_paneles, acceso, acceso_razon, distancia_km, detalles, precio_estimado, estado) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'pendiente')
+      `;
+      const values = [
+        userId,
+        num_paneles,
+        acceso,
+        acceso_razon || null,
+        distancia_km,
+        detalles || null,
+        precioEstimado,
+      ];
+
+      db.query(queryInsertarSolicitud, values, (err, result) => {
+        if (err) {
+          console.error('Error al crear la solicitud de servicio:', err);
+          return res.status(500).json({ error: 'Error al crear la solicitud de servicio.' });
         }
 
-        const nombre_servicio = result[0].nombre_servicio;
-
-        // Insertar la solicitud en la base de datos
-        const queryInsertarSolicitud = `
-          INSERT INTO solicitudes_servicio 
-          (user_id, tipo_servicio_id, nombre_servicio, marca_ac, tipo_ac, detalles, fecha, hora, direccion, estado) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
-        `;
-        const values = [userId, tipo_servicio_id, nombre_servicio, marca_ac, tipo_ac, detalles || null, fecha, hora, direccion];
-
-        db.query(queryInsertarSolicitud, values, (err, result) => {
-          if (err) {
-            console.error('Error al crear la solicitud de servicio:', err);
-            return res.status(500).json({ error: 'Error al crear la solicitud de servicio', detalle: err.message });
-          }
-
-          res.status(201).json({ mensaje: 'Solicitud de servicio creada correctamente', solicitudId: result.insertId });
+        res.status(201).json({
+          mensaje: 'Solicitud de servicio creada correctamente.',
+          solicitudId: result.insertId,
+          precioEstimado,
         });
       });
     });
   });
 });
+
 
 router.delete('/cancelar-solicitud/:solicitudId', verificarSesion, (req, res) => {
   const { solicitudId } = req.params;
